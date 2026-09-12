@@ -43,6 +43,13 @@ https://github.com/wemake-services/django-modern-rest/releases/tag/0.13.0
   with router-level and endpoint-level tags, #1434
 - Increased default `DMR_MAX_CACHE_SIZE` from `256` to `1024`, #1448
 
+### Bugfixes
+
+- Fixed component aliases like `type UserBody = Body[User]`
+  being ignored when building component parsers, #1460
+- Fixed `ResponseSpecMetadata` defined on a union member like
+  `Annotated[User, ResponseSpecMetadata(...)] | str` being ignored, #1460
+
 
 ## 0.15.0 (2026-09-11)
 

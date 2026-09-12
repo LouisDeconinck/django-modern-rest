@@ -3,9 +3,9 @@ import typing as ty
 from abc import abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Set
 from http import HTTPStatus
+from types import UnionType
 from typing import (  # noqa: WPS235
     TYPE_CHECKING,
-    Annotated,
     Any,
     ClassVar,
     Final,
@@ -14,6 +14,8 @@ from typing import (  # noqa: WPS235
     get_args,
     get_origin,
 )
+
+from dmr.types import unwrap_annotation
 
 if TYPE_CHECKING:
     from django.utils.functional import (
@@ -570,12 +572,16 @@ class EndpointMetadata:
 
 _MetadataT = TypeVar('_MetadataT')
 
+#: All possible union types: both `A | B` and `Union[A, B]`:
+_UNION_ORIGINS: Final = (ty.Union, UnionType)
+
 
 def get_annotated_metadata(
     model: Any,
     metadata_type: type[_MetadataT],
     *,
     model_meta: tuple[Any, ...] | None = None,
+    _seen: set[int] | None = None,
 ) -> _MetadataT | None:
     """
     Find given *metadata_type* in *model*.
@@ -584,14 +590,40 @@ def get_annotated_metadata(
     Or it can be a regular model, with *model_meta*,
     which is the ``__metadata__`` field from ``Annotated``.
 
+    Type aliases like ``type X = ...`` are fully unwrapped.
+    Union members are also searched for metadata,
+    so ``Annotated[Model, meta] | str`` works.
+
     Or return ``None`` if nothing can be found.
     """
-    if get_origin(model) is Annotated and model.__metadata__:
-        for metadata in model.__metadata__:
-            if isinstance(metadata, metadata_type):
-                return metadata
+    seen: set[int] = set() if _seen is None else _seen
+    if id(model) in seen:
+        # Guard against recursive aliases like `type X = int | X`:
+        return None
+    seen.add(id(model))
 
-    for metadata in model_meta or ():
+    model, annotated_meta = unwrap_annotation(model)
+    for metadata in (*annotated_meta, *(model_meta or ())):
         if isinstance(metadata, metadata_type):
             return metadata
+
+    if get_origin(model) in _UNION_ORIGINS:
+        return _search_union_members(model, metadata_type, seen)
+    return None
+
+
+def _search_union_members(
+    model: Any,
+    metadata_type: type[_MetadataT],
+    seen: set[int],
+) -> _MetadataT | None:
+    """Searches each *model* union member for *metadata_type*."""
+    for member in get_args(model):
+        member_metadata = get_annotated_metadata(
+            member,
+            metadata_type,
+            _seen=seen,
+        )
+        if member_metadata is not None:
+            return member_metadata
     return None

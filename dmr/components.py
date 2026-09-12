@@ -41,7 +41,7 @@ from dmr.openapi.objects import (
     RequestBody,
 )
 from dmr.parsers import SupportsDjangoDefaultParsing, SupportsFileParsing
-from dmr.types import TypeVarInference
+from dmr.types import TypeVarInference, unwrap_annotation
 
 if TYPE_CHECKING:
     from dmr.controller import Controller
@@ -107,9 +107,15 @@ class ComponentParserBuilder:
             if context_name == 'return':
                 continue
 
-            metadata = get_annotated_metadata(
-                component,
-                ComponentParser,  # type: ignore[type-abstract]
+            # Fully unwrap `type X = ...` aliases and `Annotated` layers:
+            unwrapped = unwrap_annotation(component)
+            metadata = next(
+                (
+                    meta
+                    for meta in unwrapped[1]
+                    if isinstance(meta, ComponentParser)
+                ),
+                None,
             )
             if metadata is None:
                 continue
@@ -121,11 +127,7 @@ class ComponentParserBuilder:
                     f'in {self._controller_cls!r}',
                 )
 
-            components.append((
-                metadata,
-                component.__origin__,
-                component.__metadata__,
-            ))
+            components.append((metadata, *unwrapped))
 
         return components
 

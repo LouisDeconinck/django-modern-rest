@@ -1,7 +1,8 @@
 import json
+import sys
 from collections.abc import Mapping
 from http import HTTPMethod, HTTPStatus
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, TypeAlias
 
 import pydantic
 import pytest
@@ -9,21 +10,31 @@ from django.http import HttpResponse
 from django.urls import path
 from inline_snapshot import snapshot
 from syrupy.assertion import SnapshotAssertion
-from typing_extensions import override
+from typing_extensions import TypedDict, override
 
 from dmr import Body, Controller, ResponseSpec, modify, validate
 from dmr.cookies import CookieSpec, NewCookie
 from dmr.errors import ErrorModel
 from dmr.headers import HeaderSpec, NewHeader
-from dmr.metadata import ResponseSpecMetadata
+from dmr.metadata import ResponseSpecMetadata, get_annotated_metadata
 from dmr.openapi import build_schema
-from dmr.plugins.pydantic import PydanticSerializer
+from dmr.plugins.pydantic import PydanticFastSerializer, PydanticSerializer
 from dmr.renderers import Renderer
 from dmr.routing import Router
+from dmr.serializer import BaseSerializer
 from dmr.test import DMRRequestFactory
 
 _HEADER_VALUE: Final = 'header_whatever'
 _COOKIE_VALUE: Final = 'cookie_whatever'
+
+serializers: list[Any] = [PydanticSerializer, PydanticFastSerializer]
+
+try:
+    from dmr.plugins.msgspec import MsgspecSerializer
+except ImportError:  # pragma: no cover
+    pass  # do nothing then :(  # noqa: WPS420
+else:
+    serializers.append(MsgspecSerializer)
 
 
 class _BodyModel(pydantic.BaseModel):
@@ -177,4 +188,126 @@ def test_error_model_with_metadata_schema(snapshot: SnapshotAssertion) -> None:
             indent=2,
         )
         == snapshot
+    )
+
+
+class _UnionModel(TypedDict):
+    age: int
+
+
+_UnionReturn: TypeAlias = (
+    Annotated[
+        _UnionModel,
+        ResponseSpecMetadata(headers={'X-Id': HeaderSpec()}),
+    ]
+    | str
+)
+
+
+class _UnionMetadataController(Controller[PydanticSerializer]):
+    def get(self) -> _UnionReturn:
+        return 'ok'
+
+
+def test_union_member_metadata() -> None:
+    """Ensure that ``ResponseSpecMetadata`` inside union members is used."""
+    endpoint = _UnionMetadataController.api_endpoints['GET']
+    assert endpoint.metadata.responses[HTTPStatus.OK].headers == {
+        'X-Id': HeaderSpec(),
+    }
+
+
+def test_union_member_metadata_runtime(
+    dmr_rf: DMRRequestFactory,
+) -> None:
+    """Ensure that endpoints with union member metadata still work."""
+    request = dmr_rf.get('/any/')
+
+    response = _UnionMetadataController.as_view()(request)
+
+    assert isinstance(response, HttpResponse)
+    assert response.status_code == HTTPStatus.OK, response.content
+    assert json.loads(response.content) == 'ok'
+
+
+def test_union_member_metadata_schema() -> None:
+    """Ensure that union member metadata is used in the OpenAPI schema."""
+    schema = build_schema(
+        Router(
+            'api/v1/',
+            [path('/union', _UnionMetadataController.as_view())],
+        ),
+    ).convert()
+
+    responses = schema['paths']['/api/v1/union']['get']['responses']
+    assert 'X-Id' in responses['200']['headers']
+
+
+@pytest.mark.parametrize('serializer', serializers)
+@pytest.mark.parametrize('include_header', [True, False])
+def test_union_member_metadata_validation(
+    dmr_rf: DMRRequestFactory,
+    *,
+    serializer: type[BaseSerializer],
+    include_header: bool,
+) -> None:
+    """Ensure that union member metadata is used for response validation."""
+
+    class _UnionValidatedController(Controller[serializer]):  # type: ignore[valid-type]
+        @validate(
+            ResponseSpec(
+                _UnionReturn,
+                status_code=HTTPStatus.OK,
+            ),
+        )
+        def get(self) -> HttpResponse:
+            return self.to_response(
+                'ok',
+                status_code=HTTPStatus.OK,
+                headers={'X-Id': _HEADER_VALUE} if include_header else None,
+            )
+
+    request = dmr_rf.get('/any/')
+
+    response = _UnionValidatedController.as_view()(request)
+
+    assert isinstance(response, HttpResponse)
+    if include_header:
+        assert response.status_code == HTTPStatus.OK, response.content
+        assert response.headers['X-Id'] == _HEADER_VALUE
+    else:
+        assert response.status_code == (HTTPStatus.UNPROCESSABLE_ENTITY), (
+            response.content
+        )
+
+
+def test_nested_union_metadata() -> None:
+    """Ensure that nested union members are searched just once."""
+    model = Annotated[int | str, 'meta'] | int
+
+    assert get_annotated_metadata(model, ResponseSpecMetadata) is None
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason='PEP-695 was added in 3.12',
+)
+def test_recursive_union_alias_metadata() -> None:  # pragma: no cover
+    """Ensure that recursive union aliases don't cause infinite recursion."""
+    namespace: dict[str, Any] = {}
+    # We have to use `exec` here, because 3.12+ syntax
+    # will cause `SyntaxError` for the whole test module:
+    exec(  # noqa: S102, WPS421
+        'type _Recursive = int | _Recursive',
+        namespace,
+    )
+    alias = namespace['_Recursive']
+
+    assert get_annotated_metadata(alias, ResponseSpecMetadata) is None
+    assert (
+        get_annotated_metadata(
+            int | alias,
+            ResponseSpecMetadata,
+        )
+        is None
     )

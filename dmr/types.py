@@ -3,6 +3,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import (  # noqa: WPS235
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Final,
@@ -16,11 +17,18 @@ from typing import (  # noqa: WPS235
 from typing_extensions import (
     Format,
     Sentinel,
+    TypeAliasType,
     get_original_bases,
     get_type_hints,
 )
 
 from dmr.exceptions import UnsolvableAnnotationsError
+
+if sys.version_info >= (3, 12):  # pragma: no cover
+    # `TypeAliasType` was added to `typing` in python3.12:
+    from typing import TypeAliasType as _TypingTypeAliasType
+else:  # pragma: no cover
+    _TypingTypeAliasType = TypeAliasType
 
 if TYPE_CHECKING:
     # During type checking it is a recursive alias, so we can be sure
@@ -52,6 +60,11 @@ else:
 
 #: Default singleton for empty values.
 EMPTY: Final = Sentinel('EMPTY')
+
+#: All possible ``TypeAliasType`` implementations,
+#: ``typing.TypeAliasType`` (3.12+) and ``typing_extensions`` backport
+#: might be different classes.
+_TYPE_ALIAS_TYPES: Final = (_TypingTypeAliasType, TypeAliasType)
 
 
 def safe_typevar(
@@ -175,6 +188,78 @@ def is_safe_subclass(annotation: Any, base_class: type[Any]) -> bool:
         )
     except TypeError:
         return False
+
+
+def unwrap_annotation(annotation: Any) -> tuple[Any, tuple[Any, ...]]:
+    """
+    Recursively unwraps *annotation* from ``Annotated`` and type aliases.
+
+    Type aliases created with the ``type X = ...`` syntax
+    (or directly via ``TypeAliasType``) are lazily resolved
+    to their real values, while ``Annotated`` layers
+    contribute to the returned metadata.
+
+    .. code:: python
+
+        >>> unwrap_annotation(Annotated[list[int], 'meta'])
+        (list[int], ('meta',))
+
+        >>> MyAlias = TypeAliasType('MyAlias', Annotated[list[int], 'meta'])
+        >>> unwrap_annotation(MyAlias)
+        (list[int], ('meta',))
+
+    Inspired by ``unwrap_annotation`` in ``litestar``.
+
+    Args:
+        annotation: type annotation to unwrap.
+
+    Returns:
+        A tuple of the innermost annotation
+        and all the ``Annotated`` metadata found.
+    """
+    metadata: list[Any] = []
+    seen_aliases: set[int] = set()
+    while True:
+        type_alias = _extract_type_alias(annotation)
+        if type_alias is None and get_origin(annotation) is Annotated:
+            annotation, *extra = get_args(annotation)
+            metadata.extend(extra)
+        elif type_alias is None or id(type_alias) in seen_aliases:
+            # `id` check guards against
+            # recursive aliases like `type X = list[X]`:
+            return annotation, tuple(metadata)
+        else:
+            seen_aliases.add(id(type_alias))
+            annotation = _resolve_type_alias(type_alias, annotation)
+
+
+def _extract_type_alias(annotation: Any) -> Any | None:
+    """Returns the ``TypeAliasType`` object hidden in *annotation*."""
+    if isinstance(annotation, _TYPE_ALIAS_TYPES):
+        return annotation
+    # Parameterized alias usage:
+    # `type A[T] = ...` used as `A[int]` produces
+    # a `GenericAlias` with `TypeAliasType` as its origin:
+    origin = get_origin(annotation)
+    if isinstance(origin, _TYPE_ALIAS_TYPES):
+        return origin
+    return None
+
+
+def _resolve_type_alias(type_alias: Any, annotation: Any) -> Any:
+    """Resolves *type_alias* to its value, substituting type args if any."""
+    type_value = type_alias.__value__
+    type_args = () if annotation is type_alias else get_args(annotation)
+    if not type_args:
+        return type_value
+    if isinstance(type_value, TypeVar):
+        return dict(
+            zip(type_alias.__parameters__, type_args, strict=False),
+        ).get(type_value, type_value)
+    try:
+        return type_value[type_args]
+    except TypeError:
+        return type_value
 
 
 class AnnotationsContext:
