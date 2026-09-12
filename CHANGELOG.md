@@ -30,6 +30,8 @@ https://github.com/wemake-services/django-modern-rest/releases/tag/0.13.0
   to all endpoints of this controller. They are merged
   with router-level and endpoint-level tags, #1434
 - Increased default `DMR_MAX_CACHE_SIZE` from `256` to `1024`, #1448
+- Added `operation_id_generator` parameter to `OpenAPIContext`
+  to customize `operationId` generation via a callback, #1461
 
 
 ## 0.15.0 (2026-09-11)

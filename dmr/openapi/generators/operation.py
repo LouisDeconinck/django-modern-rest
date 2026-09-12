@@ -1,11 +1,40 @@
 import dataclasses
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from dmr.metadata import EndpointMetadata
     from dmr.openapi.core.context import OpenAPIContext
     from dmr.serializer import BaseSerializer
+
+
+class OperationIdGeneratorCallback(Protocol):
+    """Callback protocol to customize ``operation_id`` generation."""
+
+    def __call__(
+        self,
+        path: str,
+        suffix: str,
+        metadata: 'EndpointMetadata',
+        serializer: type['BaseSerializer'],
+    ) -> str:
+        """
+        Generate a unique ``operation_id`` for an OpenAPI operation.
+
+        It is only called for endpoints that don't define
+        an explicit ``operation_id`` in their endpoint metadata.
+        The returned value is registered in the operation ID registry
+        and must be unique across the OpenAPI specification.
+
+        Parameters:
+            path: URL path of the endpoint, e.g. ``/users/{id}``.
+            suffix: Prefix added before the path,
+                contains the controller name.
+            metadata: Metadata of the endpoint,
+                contains the HTTP method among other things.
+            serializer: Serializer type that the endpoint uses.
+        """
+        ...
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -23,6 +52,7 @@ class OperationIdGenerator:
     """
 
     _context: 'OpenAPIContext'
+    _custom_generator: 'OperationIdGeneratorCallback | None' = None
 
     def __call__(
         self,
@@ -35,8 +65,9 @@ class OperationIdGenerator:
         Generate a unique operation ID for an OpenAPI operation.
 
         Uses the explicit ``operation_id`` from endpoint metadata if available,
-        otherwise generates one from the HTTP method and path. The operation ID
-        is registered in the registry to ensure uniqueness.
+        otherwise delegates to ``_custom_generator`` if it was provided,
+        otherwise generates one from the HTTP method and path.
+        The operation ID is registered in the registry to ensure uniqueness.
         """
         operation_id = metadata.operation_id
 
@@ -44,10 +75,18 @@ class OperationIdGenerator:
             self._context.registries.operation_id.register(operation_id)
             return operation_id
 
-        # Generate operation_id from path and method
-        operation_id = metadata.method.lower() + ''.join(
-            self._tokenize_path(suffix + path),
-        )
+        if self._custom_generator is None:
+            # Generate operation_id from path and method
+            operation_id = metadata.method.lower() + ''.join(
+                self._tokenize_path(suffix + path),
+            )
+        else:
+            operation_id = self._custom_generator(
+                path,
+                suffix,
+                metadata,
+                serializer,
+            )
 
         self._context.registries.operation_id.register(operation_id)
         return operation_id

@@ -310,6 +310,31 @@ metadata.
   is used to generate summary and description
   for the :class:`~dmr.openapi.objects.Operation`.
 
+Customizing ``operation_id``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default ``operationId`` is generated from the HTTP method,
+the controller name, and the URL path.
+It can also be set per endpoint
+with the ``operation_id`` parameter
+of :deco:`~dmr.endpoint.modify` or :deco:`~dmr.endpoint.validate`.
+
+To fully customize how ``operationId`` is generated,
+pass a callback via the ``operation_id_generator`` parameter
+of :class:`~dmr.openapi.OpenAPIContext`:
+
+.. literalinclude:: /examples/openapi/operation_id_customization.py
+  :caption: urls.py
+  :language: python
+  :linenos:
+
+The callback is only called for endpoints that don't define
+an explicit ``operation_id`` in their metadata.
+Explicit ``operation_id`` values always take precedence.
+The returned values must be unique across the OpenAPI specification.
+
+.. versionadded:: 0.16.0
+
 Customizing router-level metadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

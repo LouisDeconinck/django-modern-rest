@@ -20,6 +20,7 @@ from dmr.openapi.objects import Components, Reference, Schema
 
 if TYPE_CHECKING:
     from dmr.openapi.config import OpenAPIConfig
+    from dmr.openapi.generators import OperationIdGeneratorCallback
 
 
 @dataclass(slots=True, frozen=True)
@@ -61,8 +62,23 @@ class OpenAPIContext:
     def __init__(
         self,
         config: 'OpenAPIConfig | None' = None,
+        *,
+        operation_id_generator: 'OperationIdGeneratorCallback | None' = None,
     ) -> None:
-        """Initialize the OpenAPI context."""
+        """
+        Initialize the OpenAPI context.
+
+        Parameters:
+            config: Optional :class:`~dmr.openapi.OpenAPIConfig`
+                with the specification metadata.
+                When ``None``, it is resolved from ``DMR_SETTINGS``.
+            operation_id_generator: Optional callback to generate
+                ``operationId`` values for endpoints that don't define
+                an explicit ``operation_id`` in their metadata.
+                When ``None``, the default generation algorithm is used.
+
+                .. versionadded:: 0.16.0
+        """
         from dmr.openapi.config import default_config  # noqa: PLC0415
 
         self.config = config or default_config()
@@ -77,7 +93,7 @@ class OpenAPIContext:
 
         # Initialize generators:
         self.generators = GeneratorContainer(
-            operation_id=OperationIdGenerator(self),
+            operation_id=OperationIdGenerator(self, operation_id_generator),
             schema=SchemaGenerator(self),
             component_parsers=ComponentParserGenerator(self),
             response=ResponseGenerator(self),

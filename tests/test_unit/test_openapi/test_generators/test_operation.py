@@ -3,10 +3,12 @@ from typing import Final
 import pytest
 
 from dmr import Controller, modify
+from dmr.metadata import EndpointMetadata
 from dmr.openapi.config import OpenAPIConfig
 from dmr.openapi.core.context import OpenAPIContext
 from dmr.openapi.generators import OperationIdGenerator
 from dmr.plugins.pydantic import PydanticSerializer
+from dmr.serializer import BaseSerializer
 
 _TEST_CONFIG: Final = OpenAPIConfig(title='Test API', version='1.0.0')
 
@@ -144,3 +146,72 @@ def test_explicit_operation_id(generator: OperationIdGenerator) -> None:
 
     assert operation_id == 'customGetUser'
     assert 'customGetUser' in registry._operation_ids
+
+
+class _PlainController(Controller[PydanticSerializer]):
+    def get(self) -> list[int]:
+        raise NotImplementedError
+
+
+def test_default_operation_id_generation(
+    generator: OperationIdGenerator,
+) -> None:
+    """Ensure that the default generation algorithm is kept."""
+    controller = _PlainController()
+    operation_id = generator(
+        '/users/{id}',
+        'controller',
+        metadata=controller.api_endpoints['GET'].metadata,
+        serializer=PydanticSerializer,
+    )
+    registry = generator._context.registries.operation_id
+
+    assert operation_id == 'getControllerUsersId'
+    assert 'getControllerUsersId' in registry._operation_ids
+
+
+def _custom_generator(
+    path: str,
+    suffix: str,
+    metadata: EndpointMetadata,
+    serializer: type[BaseSerializer],
+) -> str:
+    method = metadata.method.lower()
+    return f'custom_{method}_{suffix}'
+
+
+def test_custom_operation_id_generator() -> None:
+    """Ensure that ``operation_id_generator`` callback is used."""
+    context = OpenAPIContext(
+        _TEST_CONFIG,
+        operation_id_generator=_custom_generator,
+    )
+
+    operation_id = context.generators.operation_id(
+        '/users/{id}',
+        'ctrl',
+        metadata=_PlainController().api_endpoints['GET'].metadata,
+        serializer=PydanticSerializer,
+    )
+
+    assert operation_id == 'custom_get_ctrl'
+    assert operation_id in context.registries.operation_id._operation_ids
+
+
+def test_explicit_operation_id_wins() -> None:
+    """Ensure that explicit ``operation_id`` wins over the callback."""
+    context = OpenAPIContext(
+        _TEST_CONFIG,
+        operation_id_generator=_custom_generator,
+    )
+
+    operation_id = context.generators.operation_id(
+        'whatever',
+        'controller',
+        metadata=_ControllerWithOperationId().api_endpoints['GET'].metadata,
+        serializer=PydanticSerializer,
+    )
+
+    # The callback would return ``custom_get_controller``, so
+    # getting the explicit ``customGetUser`` proves it was not called:
+    assert operation_id == 'customGetUser'
